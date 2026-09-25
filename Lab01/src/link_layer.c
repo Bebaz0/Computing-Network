@@ -22,6 +22,8 @@ int llOpenTx(LinkLayer llParameters)
     // TODO: Adapt and extend this code according to the specifications of the project.
     // ----------------------------------------------------
 
+    //Test coment for git @TODO remove this later
+
     if (openSerialPort(llParameters.serialPort, llParameters.baudRate) < 0)
     {
         perror("openSerialPort");
