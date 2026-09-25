@@ -11,6 +11,37 @@
 // MISC
 #define _POSIX_SOURCE 1 // POSIX compliant source
 #define BUF_SIZE 256
+#define FLAG 0x7E
+#define A_TX 0x03
+#define C_SET 0x03
+#define C_UA 0x07
+
+
+int sendSuperisionFrame(unsigned char A, unsigned char C)
+{
+    unsigned char frame[5];
+    frame[0] = FLAG;
+    frame[1] = A;
+    frame[2] = C;
+    frame[3] = A ^ C; // BCC
+    frame[4] = FLAG;
+
+    int bytesWritten = writeBytesSerialPort(frame, 5);
+    if (bytesWritten < 0)
+    {
+        perror("writeBytesSerialPort");
+        return -1;
+    }
+
+    printf("Sent supervision frame: ");
+    for (int i = 0; i < 5; i++)
+    {
+        printf("%02X ", frame[i]);
+    }
+    printf("\n");
+
+    return bytesWritten;
+}
 
 ////////////////////////////////////////////////
 // LLOPEN
@@ -22,8 +53,6 @@ int llOpenTx(LinkLayer llParameters)
     // TODO: Adapt and extend this code according to the specifications of the project.
     // ----------------------------------------------------
 
-    //Test coment for git @TODO remove this later
-
     if (openSerialPort(llParameters.serialPort, llParameters.baudRate) < 0)
     {
         perror("openSerialPort");
@@ -32,21 +61,12 @@ int llOpenTx(LinkLayer llParameters)
 
     printf("Serial port %s opened\n", llParameters.serialPort);
 
-    // Create string to send
-    unsigned char buf[BUF_SIZE] = {0};
-
-    for (int i = 0; i < BUF_SIZE; i++)
+    if (sendSuperisionFrame(A_TX, C_SET) < 0)
     {
-        buf[i] = 'a' + i % 26;
+        perror("sendSuperisionFrame");
+        return -1;
     }
 
-    // In non-canonical mode, '\n' does not end the writing.
-    // Test this condition by placing a '\n' in the middle of the buffer.
-    // The whole buffer must be sent even with the '\n'.
-    buf[5] = '\n';
-
-    int bytes = writeBytesSerialPort(buf, BUF_SIZE);
-    printf("%d bytes written to serial port\n", bytes);
 
     // Wait until all bytes have been written to the serial port
     sleep(1);
