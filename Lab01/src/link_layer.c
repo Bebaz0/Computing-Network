@@ -65,7 +65,7 @@ int llOpenTx(LinkLayer llParameters)
             return -1;
         alarmStart(llParameters.timeout);
 
-        // ponytail: fixed 5-byte read, swap for a state machine later
+       
         unsigned char frame[5];
         int received = 0;
         while (!alarmFired && received < 5)
@@ -127,11 +127,13 @@ int llOpenRx(LinkLayer llParameters)
     {
         if (frame[0] == FLAG && frame[1] == A_TX && frame[2] == C_SET &&
             frame[3] == (A_TX ^ C_SET) && frame[4] == FLAG)
-        {
             printf("SET frame received\n");
-            if (sendSuperisionFrame(A_TX, C_UA) < 0)
+            
+            if (sendSuperisionFrame(A_TX, C_UA)>0){
                 status = -1;
-        }
+                fprintf(stderr, "Couldnt Send SuperisionFrame\n")
+            }
+
         else
         {
             fprintf(stderr, "Invalid SET frame received\n");
