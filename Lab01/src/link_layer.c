@@ -4,6 +4,7 @@
 
 #include "link_layer.h"
 #include "serial_port.h"
+#include "alarm.h"
 
 #include <stdio.h>
 #include <unistd.h>
@@ -48,39 +49,45 @@ int sendSuperisionFrame(unsigned char A, unsigned char C)
 ////////////////////////////////////////////////
 int llOpenTx(LinkLayer llParameters)
 {
-    // ----------------------------------------------------
-    // This example code shows how to open the serial port and send a string.
-    // TODO: Adapt and extend this code according to the specifications of the project.
-    // ----------------------------------------------------
-
     if (openSerialPort(llParameters.serialPort, llParameters.baudRate) < 0)
     {
         perror("openSerialPort");
         return -1;
     }
-
     printf("Serial port %s opened\n", llParameters.serialPort);
 
-    if (sendSuperisionFrame(A_TX, C_SET) < 0)
-    {
-        perror("sendSuperisionFrame");
+    if (alarmSetup() < 0)
         return -1;
+
+    for (int tries = 0; tries <= llParameters.nRetransmissions; tries++)
+    {
+        if (sendSuperisionFrame(A_TX, C_SET) < 0)
+            return -1;
+        alarmStart(llParameters.timeout);
+
+        // ponytail: fixed 5-byte read, swap for a state machine later
+        unsigned char frame[5];
+        int received = 0;
+        while (!alarmFired && received < 5)
+        {
+            unsigned char byte;
+            if (readByteSerialPort(&byte) > 0) // -1 when the alarm interrupts read()
+                frame[received++] = byte;
+        }
+
+        if (received == 5 && frame[0] == FLAG && frame[1] == A_TX && frame[2] == C_UA &&
+            frame[3] == (A_TX ^ C_UA) && frame[4] == FLAG)
+        {
+            alarmStop();
+            printf("UA received\n");
+            return 0; // port stays open for llSend; llCloseTx closes it
+        }
+        alarmStop();
+        printf("No valid UA (try %d/%d)\n", tries + 1, llParameters.nRetransmissions + 1);
     }
 
-
-    // Wait until all bytes have been written to the serial port
-    sleep(1);
-
-    // Close serial port
-    if (closeSerialPort() < 0)
-    {
-        perror("closeSerialPort");
-        return -1;
-    }
-
-    printf("Serial port %s closed\n", llParameters.serialPort);
-
-    return 0;
+    closeSerialPort();
+    return -1;
 }
 
 int llOpenRx(LinkLayer llParameters)
@@ -120,7 +127,11 @@ int llOpenRx(LinkLayer llParameters)
     {
         if (frame[0] == FLAG && frame[1] == A_TX && frame[2] == C_SET &&
             frame[3] == (A_TX ^ C_SET) && frame[4] == FLAG)
+        {
             printf("SET frame received\n");
+            if (sendSuperisionFrame(A_TX, C_UA) < 0)
+                status = -1;
+        }
         else
         {
             fprintf(stderr, "Invalid SET frame received\n");
