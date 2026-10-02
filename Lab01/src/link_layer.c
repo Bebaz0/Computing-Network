@@ -85,11 +85,6 @@ int llOpenTx(LinkLayer llParameters)
 
 int llOpenRx(LinkLayer llParameters)
 {
-    // ----------------------------------------------------
-    // This example code shows how to open the serial port and receive a string.
-    // TODO: Adapt and extend this code according to the specifications of the project.
-    // ----------------------------------------------------
-
     if (openSerialPort(llParameters.serialPort, llParameters.baudRate) < 0)
     {
         perror("openSerialPort");
@@ -98,36 +93,41 @@ int llOpenRx(LinkLayer llParameters)
 
     printf("Serial port %s opened\n", llParameters.serialPort);
 
-    // Read from serial port until the 'z' char is received.
+    unsigned char frame[5];
+    size_t received = 0;
+    int status = 0;
 
-    // NOTE: This while() cycle is a simple example showing how to read from the serial port.
-    // It must be changed in order to respect the specifications of the protocol indicated in the Lab guide.
-
-    // TODO: Save the received bytes in a buffer array and print it at the end of the program.
-    volatile int STOP = FALSE;
-    int nBytesBuf = 0;
-
-    while (STOP == FALSE)
+    while (received < sizeof(frame))
     {
-        // Read one byte from serial port.
-        // NOTE: You must check how many bytes were actually read by reading the return value.
-        // In this example, we assume that the byte is always read, which may not be true.
         unsigned char byte;
         int bytes = readByteSerialPort(&byte);
-        nBytesBuf += bytes;
 
-        printf("Byte received: %c\n", byte);
-
-        if (byte == 'z')
+        if (bytes < 0)
         {
-            printf("Received 'z' char. Stop reading from serial port.\n");
-            STOP = TRUE;
+            perror("readByteSerialPort");
+            status = -1;
+            break;
+        }
+
+        if (bytes == 0)
+            continue;
+
+        frame[received++] = byte;
+        printf("Byte received: 0x%02X\n", byte);
+    }
+
+    if (status == 0)
+    {
+        if (frame[0] == FLAG && frame[1] == A_TX && frame[2] == C_SET &&
+            frame[3] == (A_TX ^ C_SET) && frame[4] == FLAG)
+            printf("SET frame received\n");
+        else
+        {
+            fprintf(stderr, "Invalid SET frame received\n");
+            status = -1;
         }
     }
 
-    printf("Total bytes received: %d\n", nBytesBuf);
-
-    // Close serial port
     if (closeSerialPort() < 0)
     {
         perror("closeSerialPort");
@@ -135,8 +135,7 @@ int llOpenRx(LinkLayer llParameters)
     }
 
     printf("Serial port %s closed\n", llParameters.serialPort);
-
-    return 0;
+    return status;
 }
 
 ////////////////////////////////////////////////
