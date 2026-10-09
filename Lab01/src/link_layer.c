@@ -5,9 +5,10 @@
 #include "link_layer.h"
 #include "serial_port.h"
 #include "alarm.h"
-
+#include "state_machine.h"
 #include <stdio.h>
 #include <unistd.h>
+#include <errno.h>
 
 // MISC
 #define _POSIX_SOURCE 1 // POSIX compliant source
@@ -56,38 +57,49 @@ int llOpenTx(LinkLayer llParameters)
     }
     printf("Serial port %s opened\n", llParameters.serialPort);
 
-    if (alarmSetup() < 0)
-        return -1;
-
-    for (int tries = 0; tries <= llParameters.nRetransmissions; tries++)
-    {
-        if (sendSuperisionFrame(A_TX, C_SET) < 0)
-            return -1;
-        alarmStart(llParameters.timeout);
-
-       
-        unsigned char frame[5];
-        int received = 0;
-        while (!alarmFired && received < 5)
-        {
-            unsigned char byte;
-            if (readByteSerialPort(&byte) > 0) // -1 when the alarm interrupts read()
-                frame[received++] = byte;
-        }
-
-        if (received == 5 && frame[0] == FLAG && frame[1] == A_TX && frame[2] == C_UA &&
-            frame[3] == (A_TX ^ C_UA) && frame[4] == FLAG)
-        {
-            alarmStop();
-            printf("UA received\n");
-            return 0; // port stays open for llSend; llCloseTx closes it
-        }
-        alarmStop();
-        printf("No valid UA (try %d/%d)\n", tries + 1, llParameters.nRetransmissions + 1);
-    }
-
+    if (alarmSetup() < 0) {
     closeSerialPort();
     return -1;
+}
+
+    for (int tries = 0; tries <= llParameters.nRetransmissions; tries++) {
+        if (sendSuperisionFrame(A_TX, C_SET) != 5) {
+            closeSerialPort();
+            return -1;
+        }
+
+        StateMachine sm;
+        smInit(&sm, A_TX, C_UA);
+        alarmStart(llParameters.timeout);
+
+        while (!alarmFired) {
+            unsigned char byte;
+            int n = readByteSerialPort(&byte);
+
+            if (n < 0) {
+                if (errno == EINTR)
+                    continue;  // o alarme interrompeu a leitura
+
+                perror("readByteSerialPort");
+                alarmStop();
+                closeSerialPort();
+                return -1;
+            }
+
+            if (n > 0 && smProcessByte(&sm, byte)) {
+                alarmStop();
+                printf("UA received\n");
+                return 0;  // manter a porta aberta
+            }
+        }
+
+        alarmStop();
+        printf("No valid UA (try %d/%d)\n",
+            tries + 1, llParameters.nRetransmissions + 1);
+    }
+
+closeSerialPort();
+return -1;
 }
 
 int llOpenRx(LinkLayer llParameters)
@@ -100,55 +112,30 @@ int llOpenRx(LinkLayer llParameters)
 
     printf("Serial port %s opened\n", llParameters.serialPort);
 
-    unsigned char frame[5];
-    size_t received = 0;
-    int status = 0;
+    StateMachine sm;
+    smInit(&sm, A_TX, C_SET);
 
-    while (received < sizeof(frame))
-    {
+    for (;;) {
         unsigned char byte;
-        int bytes = readByteSerialPort(&byte);
+        int n = readByteSerialPort(&byte);
 
-        if (bytes < 0)
-        {
+        if (n < 0) {
             perror("readByteSerialPort");
-            status = -1;
-            break;
+            closeSerialPort();
+            return -1;
         }
-
-        if (bytes == 0)
+        if (n == 0)
             continue;
 
-        frame[received++] = byte;
-        printf("Byte received: 0x%02X\n", byte);
-    }
-
-    if (status == 0)
-    {
-        if (frame[0] == FLAG && frame[1] == A_TX && frame[2] == C_SET &&
-            frame[3] == (A_TX ^ C_SET) && frame[4] == FLAG){
-            printf("SET frame received\n");
-            
-            if (sendSuperisionFrame(A_TX, C_UA)!=5){
-                status = -1;
-                fprintf(stderr, "Couldnt Send SuperisionFrame\n");
+        if (smProcessByte(&sm, byte)) {
+            if (sendSuperisionFrame(A_TX, C_UA) != 5) {
+                closeSerialPort();
+                return -1;
             }
-            }
-        else
-        {
-            fprintf(stderr, "Invalid SET frame received\n");
-            status = -1;
+            return 0;  
         }
     }
 
-    if (closeSerialPort() < 0)
-    {
-        perror("closeSerialPort");
-        return -1;
-    }
-
-    printf("Serial port %s closed\n", llParameters.serialPort);
-    return status;
 }
 
 ////////////////////////////////////////////////
