@@ -2,7 +2,7 @@
 
 #include "state_machine.h"
 
-void smInit(StateMachine *sm, unsigned char A, unsigned char C)
+void smInit(StateMachine *sm, unsigned char A, int C)
 {
    sm->state= START;
    sm->expectedA = A;
@@ -37,22 +37,23 @@ int smProcessByte(StateMachine *sm, unsigned char byte)
         break;
 
     case A_RCV:
-        if (byte == sm->expectedC)
+        if (byte == FLAG)
         {
+            sm->state = FLAG_RCV;
+        }
+        else if (sm->expectedC == SM_ANY_C || byte == sm->expectedC)
+        {
+            sm->c = byte;
             sm->state = C_RCV;
         }
-        else if (byte != FLAG)
+        else
         {
             sm->state = START;
         }
-        else{
-            sm->state = FLAG_RCV;
-        }
-        
         break;
 
     case C_RCV:
-        if (byte == (sm->expectedA ^ sm->expectedC))
+        if (byte == (sm->expectedA ^ sm->c))
         {
             sm->state = BCC_OK;
         }

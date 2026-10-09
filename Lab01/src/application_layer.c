@@ -24,11 +24,20 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
 
     if (strcmp(role, "tx") == 0)
     {
-        llOpenTx(llParameters);
+        if (llOpenTx(llParameters) < 0)
+            return;
     }
     else if (strcmp(role, "rx") == 0)
     {
-        llOpenRx(llParameters);
+        if (llOpenRx(llParameters) < 0)
+            return;
+
+        // Continuar a ler depois do llOpenRx, para responder a um SET repetido
+        unsigned char packet[MAX_PAYLOAD_SIZE];
+        while (llReceive(packet) >= 0)
+        {
+            // TODO: escrever o pacote no ficheiro
+        }
     }
     else
     {

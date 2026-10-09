@@ -19,6 +19,23 @@
 #define C_UA 0x07
 
 
+static int writeAll(const unsigned char *buf, int n)
+{
+    int sent = 0;
+    while (sent < n)
+    {
+        int w = writeBytesSerialPort(buf + sent, n - sent);
+        if (w < 0)
+        {
+            if (errno == EINTR)
+                continue;
+            return -1;
+        }
+        sent += w;
+    }
+    return sent;
+}
+
 int sendSuperisionFrame(unsigned char A, unsigned char C)
 {
     unsigned char frame[5];
@@ -28,10 +45,10 @@ int sendSuperisionFrame(unsigned char A, unsigned char C)
     frame[3] = A ^ C; // BCC
     frame[4] = FLAG;
 
-    int bytesWritten = writeBytesSerialPort(frame, 5);
+    int bytesWritten = writeAll(frame, 5);
     if (bytesWritten < 0)
     {
-        perror("writeBytesSerialPort");
+        perror("writeAll");
         return -1;
     }
 
@@ -153,9 +170,31 @@ int llSend(const unsigned char *buf, int bufSize)
 ////////////////////////////////////////////////
 int llReceive(unsigned char *packet)
 {
-    // TODO: Implement this function
+    StateMachine sm;
+    smInit(&sm, A_TX, SM_ANY_C);
 
-    return 0;
+    for (;;)
+    {
+        unsigned char byte;
+        int n = readByteSerialPort(&byte);
+
+        if (n < 0)
+        {
+            perror("readByteSerialPort");
+            return -1;
+        }
+        if (n == 0 || !smProcessByte(&sm, byte))
+            continue;
+
+        if (sm.c == C_SET)
+        {
+            printf("Repeated SET received\n");
+            if (sendSuperisionFrame(A_TX, C_UA) != 5)
+                return -1;
+        }
+
+        smInit(&sm, A_TX, SM_ANY_C);
+    }
 }
 
 ////////////////////////////////////////////////

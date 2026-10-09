@@ -4,6 +4,7 @@
 #define STATE_MACHINE_H
 
 #define FLAG 0x7E
+#define SM_ANY_C -1 // aceita qualquer C (guardado em sm->c)
 
 typedef enum
 {
@@ -19,10 +20,11 @@ typedef struct
 {
     State state;
     unsigned char expectedA;
-    unsigned char expectedC;
+    int expectedC;   // C esperado, ou SM_ANY_C
+    unsigned char c; // C recebido
 } StateMachine;
 
-void smInit(StateMachine *sm, unsigned char A, unsigned char C);
+void smInit(StateMachine *sm, unsigned char A, int C);
 
 
 int smProcessByte(StateMachine *sm, unsigned char byte);
