@@ -126,14 +126,14 @@ int llOpenRx(LinkLayer llParameters)
     if (status == 0)
     {
         if (frame[0] == FLAG && frame[1] == A_TX && frame[2] == C_SET &&
-            frame[3] == (A_TX ^ C_SET) && frame[4] == FLAG)
+            frame[3] == (A_TX ^ C_SET) && frame[4] == FLAG){
             printf("SET frame received\n");
             
-            if (sendSuperisionFrame(A_TX, C_UA)>0){
+            if (sendSuperisionFrame(A_TX, C_UA)!=5){
                 status = -1;
-                fprintf(stderr, "Couldnt Send SuperisionFrame\n")
+                fprintf(stderr, "Couldnt Send SuperisionFrame\n");
             }
-
+            }
         else
         {
             fprintf(stderr, "Invalid SET frame received\n");
