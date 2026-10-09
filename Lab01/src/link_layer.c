@@ -131,7 +131,7 @@ int llOpenRx(LinkLayer llParameters)
             
             if (sendSuperisionFrame(A_TX, C_UA)>0){
                 status = -1;
-                fprintf(stderr, "Couldnt Send SuperisionFrame\n")
+                fprintf(stderr, "Couldnt Send SuperisionFrame\n");
             }
 
         else
