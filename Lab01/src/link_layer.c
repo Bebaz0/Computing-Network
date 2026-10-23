@@ -7,6 +7,7 @@
 #include "alarm.h"
 #include "state_machine.h"
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 #include <errno.h>
 
@@ -14,9 +15,19 @@
 #define _POSIX_SOURCE 1 // POSIX compliant source
 #define BUF_SIZE 256
 #define FLAG 0x7E
-#define A_TX 0x03
+#define A_TX 0x03 // comandos do Tx / respostas do Rx
+#define A_RX 0x01 // comandos do Rx / respostas do Tx
 #define C_SET 0x03
 #define C_UA 0x07
+#define C_DISC 0x0B
+#define C_I(n) ((n) << 7)
+#define C_RR(n) (0xAA | (n))
+#define C_REJ(n) (0x54 | (n))
+
+static LinkLayer params;
+static int seq = 0; // Tx: Ns da proxima trama I; Rx: Ns esperado
+
+static int iSent = 0, retransmissions = 0, timeouts = 0, rejReceived = 0 , iReceived = 0, duplicates = 0, rejSent = 0;
 
 
 static int writeAll(const unsigned char *buf, int n)
@@ -36,7 +47,7 @@ static int writeAll(const unsigned char *buf, int n)
     return sent;
 }
 
-int sendSuperisionFrame(unsigned char A, unsigned char C)
+static int sendSupervisionFrame(unsigned char A, unsigned char C)
 {
     unsigned char frame[5];
     frame[0] = FLAG;
@@ -67,6 +78,9 @@ int sendSuperisionFrame(unsigned char A, unsigned char C)
 ////////////////////////////////////////////////
 int llOpenTx(LinkLayer llParameters)
 {
+    params = llParameters;
+    seq = 0;
+
     if (openSerialPort(llParameters.serialPort, llParameters.baudRate) < 0)
     {
         perror("openSerialPort");
@@ -74,13 +88,16 @@ int llOpenTx(LinkLayer llParameters)
     }
     printf("Serial port %s opened\n", llParameters.serialPort);
 
-    if (alarmSetup() < 0) {
-    closeSerialPort();
-    return -1;
-}
+    if (alarmSetup() < 0)
+    {
+        closeSerialPort();
+        return -1;
+    }
 
-    for (int tries = 0; tries <= llParameters.nRetransmissions; tries++) {
-        if (sendSuperisionFrame(A_TX, C_SET) != 5) {
+    for (int tries = 0; tries <= llParameters.nRetransmissions; tries++)
+    {
+        if (sendSupervisionFrame(A_TX, C_SET) != 5)
+        {
             closeSerialPort();
             return -1;
         }
@@ -89,13 +106,17 @@ int llOpenTx(LinkLayer llParameters)
         smInit(&sm, A_TX, C_UA);
         alarmStart(llParameters.timeout);
 
-        while (!alarmFired) {
+        // ponytail: se o alarme disparar mesmo antes do read() bloqueante (VMIN=1, VTIME=0),
+        // o timeout so e notado no proximo byte; VMIN=0/VTIME>0 no serial_port.c resolve
+        while (!alarmFired)
+        {
             unsigned char byte;
             int n = readByteSerialPort(&byte);
 
-            if (n < 0) {
+            if (n < 0)
+            {
                 if (errno == EINTR)
-                    continue;  // o alarme interrompeu a leitura
+                    continue; // o alarme interrompeu a leitura
 
                 perror("readByteSerialPort");
                 alarmStop();
@@ -103,24 +124,28 @@ int llOpenTx(LinkLayer llParameters)
                 return -1;
             }
 
-            if (n > 0 && smProcessByte(&sm, byte)) {
+            if (n > 0 && smProcessByte(&sm, byte))
+            {
                 alarmStop();
                 printf("UA received\n");
-                return 0;  // manter a porta aberta
+                return 0; // manter a porta aberta
             }
         }
 
         alarmStop();
         printf("No valid UA (try %d/%d)\n",
-            tries + 1, llParameters.nRetransmissions + 1);
+               tries + 1, llParameters.nRetransmissions + 1);
     }
 
-closeSerialPort();
-return -1;
+    closeSerialPort();
+    return -1;
 }
 
 int llOpenRx(LinkLayer llParameters)
 {
+    params = llParameters;
+    seq = 0;
+
     if (openSerialPort(llParameters.serialPort, llParameters.baudRate) < 0)
     {
         perror("openSerialPort");
@@ -129,14 +154,22 @@ int llOpenRx(LinkLayer llParameters)
 
     printf("Serial port %s opened\n", llParameters.serialPort);
 
+    if (alarmSetup() < 0) // usado no llCloseRx
+    {
+        closeSerialPort();
+        return -1;
+    }
+
     StateMachine sm;
     smInit(&sm, A_TX, C_SET);
 
-    for (;;) {
+    for (;;)
+    {
         unsigned char byte;
         int n = readByteSerialPort(&byte);
 
-        if (n < 0) {
+        if (n < 0)
+        {
             perror("readByteSerialPort");
             closeSerialPort();
             return -1;
@@ -144,15 +177,16 @@ int llOpenRx(LinkLayer llParameters)
         if (n == 0)
             continue;
 
-        if (smProcessByte(&sm, byte)) {
-            if (sendSuperisionFrame(A_TX, C_UA) != 5) {
+        if (smProcessByte(&sm, byte))
+        {
+            if (sendSupervisionFrame(A_TX, C_UA) != 5)
+            {
                 closeSerialPort();
                 return -1;
             }
-            return 0;  
+            return 0;
         }
     }
-
 }
 
 ////////////////////////////////////////////////
@@ -160,9 +194,98 @@ int llOpenRx(LinkLayer llParameters)
 ////////////////////////////////////////////////
 int llSend(const unsigned char *buf, int bufSize)
 {
-    // TODO: Implement this function
+    if (buf == NULL || bufSize <= 0 || bufSize > MAX_PAYLOAD_SIZE)
+        return -1;
 
-    return 0;
+    // FLAG A C BCC1 | dados + BCC2 (cada um pode virar 2 bytes) | FLAG
+    unsigned char frame[2 * (MAX_PAYLOAD_SIZE + 1) + 5];
+    int len = 0;
+    frame[len++] = FLAG;
+    frame[len++] = A_TX;
+    frame[len++] = C_I(seq);
+    frame[len++] = A_TX ^ C_I(seq); // BCC1
+
+    unsigned char bcc2 = 0;
+    for (int i = 0; i < bufSize; i++)
+        bcc2 ^= buf[i];
+
+    // Byte stuffing dos dados e do BCC2
+    for (int i = 0; i <= bufSize; i++)
+    {
+        unsigned char byte = (i < bufSize) ? buf[i] : bcc2;
+        if (byte == FLAG || byte == ESC)
+        {
+            frame[len++] = ESC;
+            frame[len++] = byte ^ 0x20;
+        }
+        else
+        {
+            frame[len++] = byte;
+        }
+    }
+    frame[len++] = FLAG;
+
+    for (int tries = 0; tries <= params.nRetransmissions; tries++)
+    {
+        if (tries > 0)
+            retransmissions++;
+
+        if (writeAll(frame, len) != len)
+        {
+            perror("writeAll");
+            return -1;
+        }
+        iSent++;
+        printf("Sent I frame Ns=%d (%d bytes)\n", seq, bufSize);
+
+        StateMachine sm;
+        smInit(&sm, A_TX, SM_ANY_C);
+        alarmStart(params.timeout);
+
+        while (!alarmFired)
+        {
+            unsigned char byte;
+            int n = readByteSerialPort(&byte);
+
+            if (n < 0)
+            {
+                if (errno == EINTR)
+                    continue; // o alarme interrompeu a leitura
+
+                perror("readByteSerialPort");
+                alarmStop();
+                return -1;
+            }
+            if (n == 0 || !smProcessByte(&sm, byte))
+                continue;
+
+            if (sm.c == C_RR(seq ^ 1))
+            {
+                alarmStop();
+                printf("RR%d received\n", seq ^ 1);
+                seq ^= 1;
+                return bufSize;
+            }
+            if (sm.c == C_REJ(seq))
+            {
+                rejReceived++;
+                printf("REJ%d received\n", seq);
+                break; // retransmitir ja
+            }
+
+            smInit(&sm, A_TX, SM_ANY_C); // ignorar outras tramas (ex: RR repetido)
+        }
+
+        if (alarmFired)
+        {
+            timeouts++;
+            printf("Timeout waiting for RR (try %d/%d)\n",
+                   tries + 1, params.nRetransmissions + 1);
+        }
+        alarmStop();
+    }
+
+    return -1;
 }
 
 ////////////////////////////////////////////////
@@ -189,8 +312,43 @@ int llReceive(unsigned char *packet)
         if (sm.c == C_SET)
         {
             printf("Repeated SET received\n");
-            if (sendSuperisionFrame(A_TX, C_UA) != 5)
+            if (sendSupervisionFrame(A_TX, C_UA) != 5)
                 return -1;
+        }
+        else if (sm.c == C_I(0) || sm.c == C_I(1))
+        {
+            int ns = sm.c >> 7;
+            int len = sm.dataLen - 1; // ultimo byte e o BCC2
+
+            unsigned char bcc2 = 0;
+            for (int i = 0; i < len; i++)
+                bcc2 ^= sm.data[i];
+
+            if (ns != seq)
+            {
+                // Duplicado (o nosso RR perdeu-se): descartar, mas confirmar
+                duplicates++;
+                printf("Duplicate I frame Ns=%d\n", ns);
+                if (sendSupervisionFrame(A_TX, C_RR(seq)) != 5)
+                    return -1;
+            }
+            else if (len <= 0 || bcc2 != sm.data[len])
+            {
+                rejSent++;
+                printf("BCC2 error in I frame Ns=%d\n", ns);
+                if (sendSupervisionFrame(A_TX, C_REJ(seq)) != 5)
+                    return -1;
+            }
+            else
+            {
+                memcpy(packet, sm.data, len);
+                iReceived++;
+                seq ^= 1;
+                printf("Received I frame Ns=%d (%d bytes)\n", ns, len);
+                if (sendSupervisionFrame(A_TX, C_RR(seq)) != 5)
+                    return -1;
+                return len;
+            }
         }
 
         smInit(&sm, A_TX, SM_ANY_C);
@@ -202,14 +360,138 @@ int llReceive(unsigned char *packet)
 ////////////////////////////////////////////////
 int llCloseTx()
 {
-    // TODO: Implement this function
+    printf("Statistics: %d I frames sent, %d retransmissions, %d timeouts, %d REJ received\n",
+           iSent, retransmissions, timeouts, rejReceived);
 
-    return 0;
+    for (int tries = 0; tries <= params.nRetransmissions; tries++)
+    {
+        if (sendSupervisionFrame(A_TX, C_DISC) != 5)
+        {
+            closeSerialPort();
+            return -1;
+        }
+
+        StateMachine sm;
+        smInit(&sm, A_RX, C_DISC);
+        alarmStart(params.timeout);
+
+        while (!alarmFired)
+        {
+            unsigned char byte;
+            int n = readByteSerialPort(&byte);
+
+            if (n < 0)
+            {
+                if (errno == EINTR)
+                    continue; // o alarme interrompeu a leitura
+
+                perror("readByteSerialPort");
+                alarmStop();
+                closeSerialPort();
+                return -1;
+            }
+
+            if (n > 0 && smProcessByte(&sm, byte))
+            {
+                alarmStop();
+                printf("DISC received\n");
+                int ret = sendSupervisionFrame(A_RX, C_UA) == 5 ? 0 : -1;
+                closeSerialPort();
+                return ret;
+            }
+        }
+
+        alarmStop();
+        printf("No valid DISC (try %d/%d)\n",
+               tries + 1, params.nRetransmissions + 1);
+    }
+
+    closeSerialPort();
+    return -1;
 }
 
 int llCloseRx()
 {
-    // TODO: Implement this function
+    printf("Statistics: %d I frames received, %d duplicates, %d REJ sent\n",
+           iReceived, duplicates, rejSent);
 
-    return 0;
+    // Esperar pelo DISC do Tx
+    StateMachine sm;
+    smInit(&sm, A_TX, SM_ANY_C);
+
+    for (;;)
+    {
+        unsigned char byte;
+        int n = readByteSerialPort(&byte);
+
+        if (n < 0)
+        {
+            perror("readByteSerialPort");
+            closeSerialPort();
+            return -1;
+        }
+        if (n == 0 || !smProcessByte(&sm, byte))
+            continue;
+
+        if (sm.c == C_DISC)
+            break;
+
+        if (sm.c == C_I(0) || sm.c == C_I(1))
+        {
+            //confirmar outra vez
+            duplicates++;
+            if (sendSupervisionFrame(A_TX, C_RR(seq)) != 5)
+            {
+                closeSerialPort();
+                return -1;
+            }
+        }
+
+        smInit(&sm, A_TX, SM_ANY_C);
+    }
+    printf("DISC received\n");
+
+    for (int tries = 0; tries <= params.nRetransmissions; tries++)
+    {
+        if (sendSupervisionFrame(A_RX, C_DISC) != 5)
+        {
+            closeSerialPort();
+            return -1;
+        }
+
+        smInit(&sm, A_RX, C_UA);
+        alarmStart(params.timeout);
+
+        while (!alarmFired)
+        {
+            unsigned char byte;
+            int n = readByteSerialPort(&byte);
+
+            if (n < 0)
+            {
+                if (errno == EINTR)
+                    continue; // o alarme interrompeu a leitura
+
+                perror("readByteSerialPort");
+                alarmStop();
+                closeSerialPort();
+                return -1;
+            }
+
+            if (n > 0 && smProcessByte(&sm, byte))
+            {
+                alarmStop();
+                printf("UA received\n");
+                closeSerialPort();
+                return 0;
+            }
+        }
+
+        alarmStop();
+        printf("No valid UA (try %d/%d)\n",
+               tries + 1, params.nRetransmissions + 1);
+    }
+
+    closeSerialPort();
+    return -1;
 }
