@@ -106,8 +106,6 @@ int llOpenTx(LinkLayer llParameters)
         smInit(&sm, A_TX, C_UA);
         alarmStart(llParameters.timeout);
 
-        // ponytail: se o alarme disparar mesmo antes do read() bloqueante (VMIN=1, VTIME=0),
-        // o timeout so e notado no proximo byte; VMIN=0/VTIME>0 no serial_port.c resolve
         while (!alarmFired)
         {
             unsigned char byte;
@@ -225,9 +223,11 @@ int llSend(const unsigned char *buf, int bufSize)
     }
     frame[len++] = FLAG;
 
-    for (int tries = 0; tries <= params.nRetransmissions; tries++)
+    // So os timeouts gastam tentativas: um REJ prova que a ligacao esta viva
+    int tries = 0;
+    for (int sends = 0; tries <= params.nRetransmissions; sends++)
     {
-        if (tries > 0)
+        if (sends > 0)
             retransmissions++;
 
         if (writeAll(frame, len) != len)
@@ -279,8 +279,9 @@ int llSend(const unsigned char *buf, int bufSize)
         if (alarmFired)
         {
             timeouts++;
+            tries++;
             printf("Timeout waiting for RR (try %d/%d)\n",
-                   tries + 1, params.nRetransmissions + 1);
+                   tries, params.nRetransmissions + 1);
         }
         alarmStop();
     }
