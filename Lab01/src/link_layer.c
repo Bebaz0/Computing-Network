@@ -23,6 +23,7 @@
 #define C_I(n) ((n) << 7)
 #define C_RR(n) (0xAA | (n))
 #define C_REJ(n) (0x54 | (n))
+#define MAX_REJ 10 // maximo de REJs por trama antes de desistir
 
 static LinkLayer params;
 static int seq = 0; // Tx: Ns da proxima trama I; Rx: Ns esperado
@@ -224,7 +225,7 @@ int llSend(const unsigned char *buf, int bufSize)
     frame[len++] = FLAG;
 
     // So os timeouts gastam tentativas: um REJ prova que a ligacao esta viva
-    int tries = 0;
+    int tries = 0, rejs = 0;
     for (int sends = 0; tries <= params.nRetransmissions; sends++)
     {
         if (sends > 0)
@@ -270,6 +271,12 @@ int llSend(const unsigned char *buf, int bufSize)
             {
                 rejReceived++;
                 printf("REJ%d received\n", seq);
+                if (++rejs > MAX_REJ)
+                {
+                    alarmStop();
+                    printf("Too many REJ (%d), giving up\n", MAX_REJ);
+                    return -1;
+                }
                 break; // retransmitir ja
             }
 
