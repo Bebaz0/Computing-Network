@@ -24,9 +24,13 @@
 #define C_RR(n) (0xAA | (n))
 #define C_REJ(n) (0x54 | (n))
 #define MAX_REJ 10 // maximo de REJs por trama antes de desistir
+// Inatividade maxima do Rx: maior que o tempo que o Tx insiste numa trama
+// ((nRetransmissions + 1) * timeout), para o Rx nunca desistir antes do Tx
+#define RX_IDLE ((params.nRetransmissions + 2) * params.timeout)
 
 static LinkLayer params;
 static int seq = 0; // Tx: Ns da proxima trama I; Rx: Ns esperado
+static int discReceived = 0; // Rx: DISC chegou durante o llReceive
 
 static int iSent = 0, retransmissions = 0, timeouts = 0, rejReceived = 0 , iReceived = 0, duplicates = 0, rejSent = 0;
 
@@ -72,6 +76,38 @@ static int sendSupervisionFrame(unsigned char A, unsigned char C)
     printf("\n");
 
     return bytesWritten;
+}
+
+// Le bytes ate a maquina de estados completar uma trama.
+// Devolve 1 se recebeu uma trama, 0 em timeout, -1 em erro.
+static int waitFrame(StateMachine *sm, int seconds)
+{
+    alarmStart(seconds);
+
+    while (!alarmFired)
+    {
+        unsigned char byte;
+        int n = readByteSerialPort(&byte);
+
+        if (n < 0)
+        {
+            if (errno == EINTR)
+                continue; // o alarme interrompeu a leitura
+
+            perror("readByteSerialPort");
+            alarmStop();
+            return -1;
+        }
+
+        if (n > 0 && smProcessByte(sm, byte))
+        {
+            alarmStop();
+            return 1;
+        }
+    }
+
+    alarmStop();
+    return 0;
 }
 
 ////////////////////////////////////////////////
@@ -144,6 +180,7 @@ int llOpenRx(LinkLayer llParameters)
 {
     params = llParameters;
     seq = 0;
+    discReceived = 0;
 
     if (openSerialPort(llParameters.serialPort, llParameters.baudRate) < 0)
     {
@@ -271,7 +308,7 @@ int llSend(const unsigned char *buf, int bufSize)
             {
                 rejReceived++;
                 printf("REJ%d received\n", seq);
-                if (++rejs > MAX_REJ)
+                if (++rejs >= MAX_REJ)
                 {
                     alarmStop();
                     printf("Too many REJ (%d), giving up\n", MAX_REJ);
@@ -306,18 +343,23 @@ int llReceive(unsigned char *packet)
 
     for (;;)
     {
-        unsigned char byte;
-        int n = readByteSerialPort(&byte);
-
-        if (n < 0)
+        int r = waitFrame(&sm, RX_IDLE);
+        if (r < 0)
+            return -1;
+        if (r == 0)
         {
-            perror("readByteSerialPort");
+            printf("Rx timeout: no frames for %d s\n", RX_IDLE);
             return -1;
         }
-        if (n == 0 || !smProcessByte(&sm, byte))
-            continue;
 
-        if (sm.c == C_SET)
+        if (sm.c == C_DISC)
+        {
+            // O Tx desistiu e esta a fechar: o llCloseRx responde
+            printf("DISC received during transfer\n");
+            discReceived = 1;
+            return -1;
+        }
+        else if (sm.c == C_SET)
         {
             printf("Repeated SET received\n");
             if (sendSupervisionFrame(A_TX, C_UA) != 5)
@@ -423,23 +465,20 @@ int llCloseRx()
     printf("Statistics: %d I frames received, %d duplicates, %d REJ sent\n",
            iReceived, duplicates, rejSent);
 
-    // Esperar pelo DISC do Tx
+    // Esperar pelo DISC do Tx (se ainda nao chegou no llReceive)
     StateMachine sm;
     smInit(&sm, A_TX, SM_ANY_C);
 
-    for (;;)
+    while (!discReceived)
     {
-        unsigned char byte;
-        int n = readByteSerialPort(&byte);
-
-        if (n < 0)
+        int r = waitFrame(&sm, RX_IDLE);
+        if (r <= 0)
         {
-            perror("readByteSerialPort");
+            if (r == 0)
+                printf("Rx timeout: no DISC for %d s\n", RX_IDLE);
             closeSerialPort();
             return -1;
         }
-        if (n == 0 || !smProcessByte(&sm, byte))
-            continue;
 
         if (sm.c == C_DISC)
             break;

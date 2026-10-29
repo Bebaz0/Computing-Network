@@ -72,6 +72,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         {
             printf("Transfer failed (START)\n");
             fclose(f);
+            llCloseTx();
             return;
         }
 
@@ -85,6 +86,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
             {
                 printf("Transfer failed (DATA)\n");
                 fclose(f);
+                llCloseTx();
                 return;
             }
         }
@@ -94,6 +96,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         if (llSend(packet, len) < 0)
         {
             printf("Transfer failed (END)\n");
+            llCloseTx();
             return;
         }
 
@@ -120,6 +123,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
             {
                 printf("Transfer failed\n");
                 fclose(f);
+                llCloseRx();
                 return;
             }
 
